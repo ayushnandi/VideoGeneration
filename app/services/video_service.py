@@ -139,10 +139,17 @@ class VideoService:
 
     @staticmethod
     def _escape_drawtext(text):
-        """Escape special characters for FFmpeg drawtext filter."""
-        # Order matters: backslash first, then the rest
-        for ch in ["\\", "'", ":", "%"]:
-            text = text.replace(ch, f"\\{ch}")
+        """Escape special characters for FFmpeg drawtext (single-quoted mode).
+
+        Inside single-quoted values, most chars are safe. But single quotes
+        themselves break parsing, so we replace them. We also normalize
+        unicode that causes encoding issues.
+        """
+        text = text.replace("\u2026", "...")  # ellipsis → three dots
+        text = text.replace("\u2019", "")     # curly quote → remove
+        text = text.replace("'", "")          # ASCII quote → remove
+        text = text.replace("\\", "\\\\")
+        text = text.replace("%", "%%")        # % is special in drawtext (time codes)
         return text
 
     def _build_subtitle_chunks(self, timestamps, dialogue):
@@ -182,24 +189,24 @@ class VideoService:
         pos_left_x = margin
         pos_right_x = vid_w - ow - margin
 
-        # ── resolve font path (Inter-Bold → Arial fallback) ──────
+        # ── resolve font path ──────────────────────────────────────
+        # Prefer a path with no spaces (FFmpeg fontconfig can't handle spaces)
         font_path = self.config.get("FONT_PATH", "")
-        if not font_path or not os.path.exists(font_path):
-            font_path = r"C:/Windows/Fonts/arial.ttf"
-        # FFmpeg on Windows needs forward slashes & escaped colons
+        if not font_path or not os.path.exists(font_path) or " " in font_path:
+            font_path = r"C:\Windows\Fonts\arial.ttf"
         font_path_ff = font_path.replace("\\", "/").replace(":", "\\:")
         font_size = self.config.get("SUBTITLE_FONT_SIZE", 48)
 
-        # ── toji image (constant, right side, always visible) ────
+        # ── toji image ────────────────────────────────────────────
         toji_cfg = speakers.get("toji", speakers["default"])
         toji_img = os.path.join(speakers_dir, toji_cfg["image"])
 
-        # ── collect unique cat images & map lines → image key ────
+        # ── collect unique cat images (only for cat's lines) ──────
         unique_cat_images = {}   # key (relative path) → absolute path
         line_cat_key = []        # per-line: which cat image key
         for line in dialogue:
             cat_rel = line.get("cat_image", "cat/innocent_cat.jpg")
-            if cat_rel not in unique_cat_images:
+            if line["speaker"].lower() == "cat" and cat_rel not in unique_cat_images:
                 unique_cat_images[cat_rel] = os.path.join(speakers_dir, cat_rel)
             line_cat_key.append(cat_rel)
 
@@ -218,6 +225,10 @@ class VideoService:
 
         # ── build filter_complex ─────────────────────────────────
         filters = []
+        total_duration = timestamps[-1]["end"] if timestamps else 0
+
+        # Center position for single speaker
+        center_x = (vid_w - ow) // 2
 
         # Scale toji once
         filters.append(f"[{toji_idx}:v]scale={ow}:{oh}[img_toji]")
@@ -227,18 +238,24 @@ class VideoService:
             safe_label = f"img_cat_{idx}"
             filters.append(f"[{idx}:v]scale={ow}:{oh}[{safe_label}]")
 
-        # ── toji overlay: always visible for full duration ───────
-        total_duration = timestamps[-1]["end"] if timestamps else 0
-        enable_all = f"between(t,0,{total_duration:.3f})"
+        # ── toji overlay: only during toji's lines ───────────────
+        toji_windows = []
+        for i, line in enumerate(dialogue):
+            if line["speaker"].lower() == "toji":
+                toji_windows.append(
+                    f"between(t,{timestamps[i]['start']:.3f},{timestamps[i]['end']:.3f})"
+                )
+        toji_enable = "+".join(toji_windows)
         filters.append(
-            f"[0:v][img_toji]overlay={pos_right_x}:{y_pos}:"
-            f"enable='{enable_all}'[v_toji]"
+            f"[0:v][img_toji]overlay={center_x}:{y_pos}:"
+            f"enable='{toji_enable}'[v_toji]"
         )
 
-        # ── cat overlays: one per unique image, with combined enable ─
-        # Group line time windows by cat image key
+        # ── cat overlays: only during cat's lines, one per unique image ─
         cat_time_windows = {}
         for i, cat_rel in enumerate(line_cat_key):
+            if dialogue[i]["speaker"].lower() != "cat":
+                continue
             if cat_rel not in cat_time_windows:
                 cat_time_windows[cat_rel] = []
             cat_time_windows[cat_rel].append(
@@ -253,7 +270,7 @@ class VideoService:
             enable_expr = "+".join(windows)
             out_label = f"v{overlay_counter}"
             filters.append(
-                f"[{prev}][{safe_label}]overlay={pos_left_x}:{y_pos}:"
+                f"[{prev}][{safe_label}]overlay={center_x}:{y_pos}:"
                 f"enable='{enable_expr}'[{out_label}]"
             )
             prev = out_label
@@ -288,10 +305,15 @@ class VideoService:
 
         filter_complex = ";".join(filters)
 
+        # Write filter to a script file to avoid shell quoting issues
+        filter_script = output_path + ".filtergraph.txt"
+        with open(filter_script, "w", encoding="utf-8") as f:
+            f.write(filter_complex)
+
         cmd = [
             self.ffmpeg, "-y",
             *inputs,
-            "-filter_complex", filter_complex,
+            "-filter_complex_script", filter_script,
             "-map", f"[{final_label}]",
             "-map", "1:a",
             "-t", f"{total_duration:.3f}",
@@ -301,5 +323,10 @@ class VideoService:
             output_path,
         ]
         result = subprocess.run(cmd, capture_output=True, text=True)
+
+        # Clean up filter script
+        if os.path.exists(filter_script):
+            os.remove(filter_script)
+
         if result.returncode != 0:
             raise RuntimeError(f"Compositing failed: {result.stderr}")

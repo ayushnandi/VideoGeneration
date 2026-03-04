@@ -1,16 +1,16 @@
 {
   "cat": {
-    "voice_id": "lhTvHflPVOqgSWyuWQry",
+    "voice_id": "EXAVITQu4vr4xnSDxMaL",
     "image": "cat/cat_innocent_idle.png",
     "position": "left"
   },
   "toji": {
-    "voice_id": "6MoEUz34rbRrmmyxgRm4",
+    "voice_id": "pNInz6obpgDQGcFmaJgB",
     "image": "toji/Toji Fushiguro.jpg",
     "position": "right"
   },
   "default": {
-    "voice_id": "6MoEUz34rbRrmmyxgRm4",
+    "voice_id": "pNInz6obpgDQGcFmaJgB",
     "image": "toji/Toji Fushiguro.jpg",
     "position": "right"
   }
