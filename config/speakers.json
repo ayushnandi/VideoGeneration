@@ -1,0 +1,17 @@
+{
+  "cat": {
+    "voice_id": "lhTvHflPVOqgSWyuWQry",
+    "image": "cat/cat_innocent_idle.png",
+    "position": "left"
+  },
+  "toji": {
+    "voice_id": "6MoEUz34rbRrmmyxgRm4",
+    "image": "toji/Toji Fushiguro.jpg",
+    "position": "right"
+  },
+  "default": {
+    "voice_id": "6MoEUz34rbRrmmyxgRm4",
+    "image": "toji/Toji Fushiguro.jpg",
+    "position": "right"
+  }
+}

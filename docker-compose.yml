@@ -1,0 +1,30 @@
+# Video Generation App
+#
+# EC2 Deployment Steps:
+#   1. Launch Ubuntu 24.04 on t3.medium+ with 30GB storage
+#   2. Install Docker: curl -fsSL https://get.docker.com | sh
+#   3. Clone project and cd into it
+#   4. Copy .env.example to .env, set ELEVENLABS_API_KEY and FLASK_SECRET_KEY
+#   5. Place background video in assets/backgrounds/background.mp4
+#   6. Place speaker images in assets/speakers/
+#   7. docker compose up -d --build
+#   8. Set up Nginx reverse proxy: proxy_pass http://127.0.0.1:8000
+#   9. Optional: certbot for Let's Encrypt HTTPS
+#  10. Cron cleanup: 0 3 * * * find /path/to/output -name '*.mp4' -mtime +7 -delete
+
+services:
+  app:
+    build: .
+    ports:
+      - "8000:8000"
+    env_file:
+      - .env
+    volumes:
+      - ./assets:/app/assets:ro
+      - ./config:/app/config:ro
+      - ./output:/app/output
+    restart: unless-stopped
+    deploy:
+      resources:
+        limits:
+          memory: 2G

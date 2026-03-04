@@ -1,0 +1,16 @@
+.env
+__pycache__/
+*.pyc
+temp/
+output/
+*.mp4
+*.mp3
+*.wav
+.venv/
+venv/
+*.egg-info/
+dist/
+build/
+ffmpeg.zip
+.claude/
+assets/backgrounds/

@@ -1,0 +1,65 @@
+{% extends "base.html" %}
+
+{% block title %}Job Status — Video Generator{% endblock %}
+
+{% block content %}
+<div class="card">
+    <h2>Job Status</h2>
+    <p class="job-id">Job: <code>{{ job_id }}</code></p>
+
+    <div class="progress-container">
+        <div class="progress-bar" id="progress-bar" style="width: {{ job.progress }}%">
+            <span id="progress-text">{{ job.progress }}%</span>
+        </div>
+    </div>
+
+    <p class="status-message" id="status-message">{{ job.message }}</p>
+
+    <div id="error-box" class="alert error" style="display: none;"></div>
+
+    <div id="download-section" style="display: none;">
+        <a href="{{ url_for('main.download', job_id=job_id) }}" class="btn">Download Video</a>
+    </div>
+
+    <a href="{{ url_for('main.index') }}" class="btn btn-secondary">New Upload</a>
+</div>
+{% endblock %}
+
+{% block scripts %}
+<script>
+    const jobId = "{{ job_id }}";
+    const progressBar = document.getElementById('progress-bar');
+    const progressText = document.getElementById('progress-text');
+    const statusMessage = document.getElementById('status-message');
+    const errorBox = document.getElementById('error-box');
+    const downloadSection = document.getElementById('download-section');
+
+    function pollStatus() {
+        fetch(`/api/status/${jobId}`)
+            .then(r => r.json())
+            .then(data => {
+                progressBar.style.width = data.progress + '%';
+                progressText.textContent = data.progress + '%';
+                statusMessage.textContent = data.message || data.status;
+
+                if (data.status === 'done') {
+                    downloadSection.style.display = 'block';
+                    progressBar.classList.add('complete');
+                    return;
+                }
+
+                if (data.status === 'error') {
+                    errorBox.textContent = data.error || 'An error occurred.';
+                    errorBox.style.display = 'block';
+                    progressBar.classList.add('error');
+                    return;
+                }
+
+                setTimeout(pollStatus, 2000);
+            })
+            .catch(() => setTimeout(pollStatus, 3000));
+    }
+
+    pollStatus();
+</script>
+{% endblock %}

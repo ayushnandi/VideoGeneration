@@ -1,0 +1,64 @@
+{% extends "base.html" %}
+
+{% block title %}Upload Dialogue — Video Generator{% endblock %}
+
+{% block content %}
+<div class="card">
+    <h2>Upload Dialogue</h2>
+
+    {% if error %}
+    <div class="alert error">{{ error }}</div>
+    {% endif %}
+
+    <form action="{{ url_for('main.upload') }}" method="post" enctype="multipart/form-data" id="upload-form">
+        <div class="drop-zone" id="drop-zone">
+            <p>Drag & drop a JSON file here, or click to select</p>
+            <input type="file" name="dialogue_file" accept=".json" id="file-input">
+        </div>
+        <div id="file-name" class="file-name"></div>
+        <button type="submit" class="btn">Generate Video</button>
+    </form>
+
+    <div class="hint">
+        <h3>Expected JSON format:</h3>
+        <pre>[
+  {"speaker": "alice", "text": "Hello there!"},
+  {"speaker": "bob", "text": "Hi, how are you?"}
+]</pre>
+    </div>
+</div>
+{% endblock %}
+
+{% block scripts %}
+<script>
+    const dropZone = document.getElementById('drop-zone');
+    const fileInput = document.getElementById('file-input');
+    const fileName = document.getElementById('file-name');
+
+    dropZone.addEventListener('click', () => fileInput.click());
+
+    dropZone.addEventListener('dragover', (e) => {
+        e.preventDefault();
+        dropZone.classList.add('drag-over');
+    });
+
+    dropZone.addEventListener('dragleave', () => {
+        dropZone.classList.remove('drag-over');
+    });
+
+    dropZone.addEventListener('drop', (e) => {
+        e.preventDefault();
+        dropZone.classList.remove('drag-over');
+        if (e.dataTransfer.files.length) {
+            fileInput.files = e.dataTransfer.files;
+            fileName.textContent = e.dataTransfer.files[0].name;
+        }
+    });
+
+    fileInput.addEventListener('change', () => {
+        if (fileInput.files.length) {
+            fileName.textContent = fileInput.files[0].name;
+        }
+    });
+</script>
+{% endblock %}
