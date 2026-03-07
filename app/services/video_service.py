@@ -72,11 +72,10 @@ class VideoService:
             voice_id = speaker_cfg["voice_id"]
 
             audio_path = os.path.join(job_dir, f"line_{i:04d}.mp3")
-            duration = generate_tts(
+            duration, word_timings = generate_tts(
                 line["text"], voice_id, audio_path, api_key, model, ffprobe_bin=ffprobe
             )
-
-            segments.append({"index": i, "path": audio_path, "duration": duration})
+            segments.append({"index": i, "path": audio_path, "duration": duration, "word_timings": word_timings})
 
             progress = int(10 + (i + 1) / len(dialogue) * 50)
             job_manager.update_job(
@@ -91,7 +90,19 @@ class VideoService:
         timestamps = []
         current = 0.0
         for seg in segments:
-            timestamps.append({"start": current, "end": current + seg["duration"]})
+            # Offset word timings to absolute time in the full audio
+            word_timings = []
+            for wt in seg.get("word_timings", []):
+                word_timings.append({
+                    "word": wt["word"],
+                    "start": current + wt["start"],
+                    "end": current + wt["end"],
+                })
+            timestamps.append({
+                "start": current,
+                "end": current + seg["duration"],
+                "word_timings": word_timings,
+            })
             current += seg["duration"]
         return timestamps
 
@@ -135,44 +146,153 @@ class VideoService:
         if result.returncode != 0:
             raise RuntimeError(f"Background prep failed: {result.stderr}")
 
-    # ── subtitle helpers ────────────────────────────────────────────
+    # ── subtitle helpers (ASS karaoke) ─────────────────────────────
 
     @staticmethod
-    def _escape_drawtext(text):
-        """Escape special characters for FFmpeg drawtext (single-quoted mode).
-
-        Inside single-quoted values, most chars are safe. But single quotes
-        themselves break parsing, so we replace them. We also normalize
-        unicode that causes encoding issues.
-        """
-        text = text.replace("\u2026", "...")  # ellipsis → three dots
-        text = text.replace("\u2019", "")     # curly quote → remove
-        text = text.replace("'", "")          # ASCII quote → remove
-        text = text.replace("\\", "\\\\")
-        text = text.replace("%", "%%")        # % is special in drawtext (time codes)
+    def _sanitize_ass_text(text):
+        """Remove characters that break ASS subtitle parsing."""
+        text = text.replace("\\", "")
+        text = text.replace("{", "(")
+        text = text.replace("}", ")")
+        text = text.replace("\u2026", "...")
+        text = text.replace("\u2019", "'")
+        text = text.replace("\n", " ")
         return text
 
-    def _build_subtitle_chunks(self, timestamps, dialogue):
-        """Split each dialogue line into N-word chunks with timed windows."""
+    @staticmethod
+    def _ass_timestamp(seconds):
+        """Convert seconds to ASS timestamp format H:MM:SS.CC"""
+        h = int(seconds // 3600)
+        m = int((seconds % 3600) // 60)
+        s = seconds % 60
+        return f"{h}:{m:02d}:{s:05.2f}"
+
+    def _generate_ass_file(self, timestamps, dialogue, ass_path):
+        """Generate an ASS subtitle file with karaoke-style word highlighting.
+
+        Uses real word-level timestamps from ElevenLabs when available,
+        so each word lights up exactly when the speaker says it.
+        Falls back to equal distribution when word timings are missing.
+        """
+        font_name = self.config.get("FONT_NAME", "Poppins ExtraBold")
+        font_size = self.config.get("SUBTITLE_FONT_SIZE", 58)
+        highlight_extra = self.config.get("SUBTITLE_HIGHLIGHT_EXTRA_SIZE", 4)
+        highlight_size = font_size + highlight_extra
+        vid_w = self.config["VIDEO_WIDTH"]
+        vid_h = self.config["VIDEO_HEIGHT"]
         words_per = self.config.get("SUBTITLE_WORDS_PER_CHUNK", 4)
-        chunks = []
+
+        # ASS header — Alignment 5 = center-middle
+        lines = [
+            "[Script Info]",
+            "ScriptType: v4.00+",
+            f"PlayResX: {vid_w}",
+            f"PlayResY: {vid_h}",
+            "WrapStyle: 0",
+            "",
+            "[V4+ Styles]",
+            "Format: Name, Fontname, Fontsize, PrimaryColour, SecondaryColour, "
+            "OutlineColour, BackColour, Bold, Italic, Underline, StrikeOut, "
+            "ScaleX, ScaleY, Spacing, Angle, BorderStyle, Outline, Shadow, "
+            "Alignment, MarginL, MarginR, MarginV, Encoding",
+            f"Style: Default,{font_name},{font_size},"
+            "&H00FFFFFF,&H0000FFFF,&H00000000,&H00000000,"
+            "0,0,0,0,100,100,0,0,1,3,0,5,10,10,10,1",
+            "",
+            "[Events]",
+            "Format: Layer, Start, End, Style, Name, "
+            "MarginL, MarginR, MarginV, Effect, Text",
+        ]
+
         for ts, line in zip(timestamps, dialogue):
-            words = line["text"].split()
-            n_chunks = max(1, -(-len(words) // words_per))  # ceil division
-            line_dur = ts["end"] - ts["start"]
-            chunk_dur = line_dur / n_chunks
+            all_words = line["text"].split()
+            if not all_words:
+                continue
+
+            word_timings = ts.get("word_timings", [])
+
+            # Build per-word timing: use real timings if available
+            if word_timings and len(word_timings) == len(all_words):
+                per_word = word_timings
+            elif word_timings and len(word_timings) > 0:
+                # Mismatch in count (punctuation differences etc) —
+                # redistribute real timings across split words proportionally
+                per_word = self._redistribute_timings(
+                    all_words, word_timings, ts["start"], ts["end"]
+                )
+            else:
+                # No word timings — fall back to equal distribution
+                line_dur = ts["end"] - ts["start"]
+                word_dur = line_dur / len(all_words)
+                per_word = []
+                for wi, w in enumerate(all_words):
+                    per_word.append({
+                        "word": w,
+                        "start": ts["start"] + wi * word_dur,
+                        "end": ts["start"] + (wi + 1) * word_dur,
+                    })
+
+            # Split words into display chunks
+            n_chunks = max(1, -(-len(all_words) // words_per))
             for ci in range(n_chunks):
-                start_word = ci * words_per
-                end_word = min(start_word + words_per, len(words))
-                chunk_text = " ".join(words[start_word:end_word])
-                chunk_start = ts["start"] + ci * chunk_dur
-                chunk_end = chunk_start + chunk_dur
-                chunks.append({
-                    "text": chunk_text,
-                    "start": chunk_start,
-                    "end": chunk_end,
-                })
-        return chunks
+                si = ci * words_per
+                ei = min(si + words_per, len(all_words))
+                chunk_words = all_words[si:ei]
+                chunk_timings = per_word[si:ei]
+
+                for wi in range(len(chunk_words)):
+                    w_start = chunk_timings[wi]["start"]
+                    w_end = chunk_timings[wi]["end"]
+
+                    parts = []
+                    for wj, w in enumerate(chunk_words):
+                        clean = self._sanitize_ass_text(w)
+                        if wj == wi:
+                            parts.append(
+                                f"{{\\c&H00FFFF&\\fs{highlight_size}}}"
+                                f"{clean}"
+                                f"{{\\r}}"
+                            )
+                        else:
+                            parts.append(clean)
+
+                    text = " ".join(parts)
+                    start_str = self._ass_timestamp(w_start)
+                    end_str = self._ass_timestamp(w_end)
+                    lines.append(
+                        f"Dialogue: 0,{start_str},{end_str},Default,,0,0,0,,{text}"
+                    )
+
+        with open(ass_path, "w", encoding="utf-8-sig") as f:
+            f.write("\n".join(lines) + "\n")
+
+    @staticmethod
+    def _redistribute_timings(text_words, api_timings, line_start, line_end):
+        """When word count from text.split() differs from API alignment,
+        map API timings onto text words proportionally."""
+        n = len(text_words)
+        total_dur = line_end - line_start
+        if total_dur <= 0:
+            total_dur = 0.001
+
+        # Use total character count to assign proportional durations
+        total_chars = sum(len(w) for w in text_words)
+        if total_chars == 0:
+            total_chars = n
+
+        # Use API's overall time span
+        api_start = api_timings[0]["start"] if api_timings else line_start
+        api_end = api_timings[-1]["end"] if api_timings else line_end
+
+        result = []
+        cursor = api_start
+        for w in text_words:
+            proportion = len(w) / total_chars
+            w_dur = (api_end - api_start) * proportion
+            result.append({"word": w, "start": cursor, "end": cursor + w_dur})
+            cursor += w_dur
+
+        return result
 
     # ── main composite ────────────────────────────────────────────
 
@@ -188,14 +308,6 @@ class VideoService:
         y_pos = vid_h - oh - 120
         pos_left_x = margin
         pos_right_x = vid_w - ow - margin
-
-        # ── resolve font path ──────────────────────────────────────
-        # Prefer a path with no spaces (FFmpeg fontconfig can't handle spaces)
-        font_path = self.config.get("FONT_PATH", "")
-        if not font_path or not os.path.exists(font_path) or " " in font_path:
-            font_path = r"C:\Windows\Fonts\arial.ttf"
-        font_path_ff = font_path.replace("\\", "/").replace(":", "\\:")
-        font_size = self.config.get("SUBTITLE_FONT_SIZE", 48)
 
         # ── toji image ────────────────────────────────────────────
         toji_cfg = speakers.get("toji", speakers["default"])
@@ -227,8 +339,9 @@ class VideoService:
         filters = []
         total_duration = timestamps[-1]["end"] if timestamps else 0
 
-        # Center position for single speaker
-        center_x = (vid_w - ow) // 2
+        # Cat on left, Toji on right
+        cat_x = pos_left_x
+        toji_x = pos_right_x
 
         # Scale toji once
         filters.append(f"[{toji_idx}:v]scale={ow}:{oh}[img_toji]")
@@ -247,7 +360,7 @@ class VideoService:
                 )
         toji_enable = "+".join(toji_windows)
         filters.append(
-            f"[0:v][img_toji]overlay={center_x}:{y_pos}:"
+            f"[0:v][img_toji]overlay={toji_x}:{y_pos}:"
             f"enable='{toji_enable}'[v_toji]"
         )
 
@@ -270,38 +383,25 @@ class VideoService:
             enable_expr = "+".join(windows)
             out_label = f"v{overlay_counter}"
             filters.append(
-                f"[{prev}][{safe_label}]overlay={center_x}:{y_pos}:"
+                f"[{prev}][{safe_label}]overlay={cat_x}:{y_pos}:"
                 f"enable='{enable_expr}'[{out_label}]"
             )
             prev = out_label
             overlay_counter += 1
 
-        # ── subtitle drawtext filters ────────────────────────────
-        chunks = self._build_subtitle_chunks(timestamps, dialogue)
-        subtitle_y = y_pos - 80  # just above speaker images
+        # ── ASS karaoke subtitles ──────────────────────────────────
+        ass_file = output_path + ".ass"
+        fonts_dir = os.path.join(self.config["ASSETS_DIR"], "fonts")
+        self._generate_ass_file(timestamps, dialogue, ass_file)
 
-        drawtext_parts = []
-        for chunk in chunks:
-            escaped = self._escape_drawtext(chunk["text"])
-            dt = (
-                f"drawtext=text='{escaped}'"
-                f":fontfile='{font_path_ff}'"
-                f":fontsize={font_size}"
-                f":fontcolor=yellow"
-                f":borderw=2:bordercolor=black"
-                f":x=(w-text_w)/2"
-                f":y={subtitle_y}"
-                f":enable='between(t,{chunk['start']:.3f},{chunk['end']:.3f})'"
-            )
-            drawtext_parts.append(dt)
+        # Escape paths for FFmpeg filter syntax (\: for drive colon)
+        ass_path_ff = ass_file.replace("\\", "/").replace(":", "\\:")
+        fonts_dir_ff = fonts_dir.replace("\\", "/").replace(":", "\\:")
 
-        # Chain drawtext as comma-separated filters on the last overlay output
-        if drawtext_parts:
-            dt_chain = ",".join(drawtext_parts)
-            filters.append(f"[{prev}]{dt_chain}[final]")
-            final_label = "final"
-        else:
-            final_label = prev
+        filters.append(
+            f"[{prev}]ass='{ass_path_ff}':fontsdir='{fonts_dir_ff}'[final]"
+        )
+        final_label = "final"
 
         filter_complex = ";".join(filters)
 
@@ -324,9 +424,10 @@ class VideoService:
         ]
         result = subprocess.run(cmd, capture_output=True, text=True)
 
-        # Clean up filter script
-        if os.path.exists(filter_script):
-            os.remove(filter_script)
+        # Clean up temp files
+        for tmp in (filter_script, ass_file):
+            if os.path.exists(tmp):
+                os.remove(tmp)
 
         if result.returncode != 0:
             raise RuntimeError(f"Compositing failed: {result.stderr}")

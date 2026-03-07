@@ -1,41 +1,57 @@
 """
-Standalone demo script — generates a video directly without the Flask server.
-Usage: python generate_demo.py
+Rebuild video from existing audio files (skips TTS).
+Uses only the first 15 dialogue lines since line_0015.mp3 is missing.
+Extracts word-level timestamps using Whisper for accurate subtitle sync.
 """
 
 import json
 import os
+import subprocess
 import sys
-import time
 
 from dotenv import load_dotenv
 
 load_dotenv()
-
-# Add project root to path
 sys.path.insert(0, os.path.dirname(__file__))
 
 from config.settings import Config
+from app.services.tts_service import get_audio_duration
+from app.services.video_service import VideoService
+
+
+def extract_word_timings_whisper(audio_path, model):
+    """Use faster-whisper to get word-level timestamps from an audio file."""
+    segments, _ = model.transcribe(
+        audio_path,
+        language="hi",
+        word_timestamps=True,
+    )
+    word_timings = []
+    for segment in segments:
+        for word in segment.words:
+            word_timings.append({
+                "word": word.word.strip(),
+                "start": word.start,
+                "end": word.end,
+            })
+    return word_timings
 
 
 def main():
-    # Load dialogue
-    dialogue_path = os.path.join(Config.ASSETS_DIR, "..", "demo_dialogue.json")
-    with open(dialogue_path, "r", encoding="utf-8") as f:
-        dialogue = json.load(f)
-
-    # Load speakers config
     with open(Config.SPEAKERS_CONFIG, "r", encoding="utf-8") as f:
         speakers = json.load(f)
 
-    # Build config dict (same shape as Flask app.config)
+    with open(os.path.join(Config.ASSETS_DIR, "..", "demo_dialogue.json"), "r", encoding="utf-8") as f:
+        dialogue = json.load(f)
+
+    # Only use first 15 lines (we have audio for 0-14)
+    dialogue = dialogue[:15]
+
     config = {
         "TEMP_DIR": Config.TEMP_DIR,
         "OUTPUT_DIR": Config.OUTPUT_DIR,
         "SPEAKERS": speakers,
         "SPEAKERS_DIR": Config.SPEAKERS_DIR,
-        "ELEVENLABS_API_KEY": Config.ELEVENLABS_API_KEY,
-        "ELEVENLABS_MODEL": Config.ELEVENLABS_MODEL,
         "FFMPEG_BIN": Config.FFMPEG_BIN,
         "FFPROBE_BIN": Config.FFPROBE_BIN,
         "BACKGROUND_VIDEO": Config.BACKGROUND_VIDEO,
@@ -51,56 +67,32 @@ def main():
         "SUBTITLE_WORDS_PER_CHUNK": Config.SUBTITLE_WORDS_PER_CHUNK,
     }
 
-    # Ensure dirs exist
-    os.makedirs(config["TEMP_DIR"], exist_ok=True)
     os.makedirs(config["OUTPUT_DIR"], exist_ok=True)
-
-    # Validate
-    if not config["ELEVENLABS_API_KEY"]:
-        print("ERROR: Set ELEVENLABS_API_KEY in .env file")
-        sys.exit(1)
-
-    if not os.path.exists(config["BACKGROUND_VIDEO"]):
-        print(f"ERROR: Background video not found at {config['BACKGROUND_VIDEO']}")
-        sys.exit(1)
-
-    print(f"Dialogue: {len(dialogue)} lines")
-    print(f"Video: {config['VIDEO_WIDTH']}x{config['VIDEO_HEIGHT']} (9:16 portrait)")
-    print(f"FFmpeg: {config['FFMPEG_BIN']}")
-    print()
-
-    # Run pipeline synchronously (not threaded)
-    from app.services.job_manager import job_manager
-    from app.services.tts_service import generate_tts, get_audio_duration
-    from app.services.video_service import VideoService
-
-    job_id = "demo"
-    job_dir = os.path.join(config["TEMP_DIR"], job_id)
-    os.makedirs(job_dir, exist_ok=True)
-
+    job_dir = os.path.join(config["TEMP_DIR"], "demo")
     ffmpeg = config["FFMPEG_BIN"]
     ffprobe = config["FFPROBE_BIN"]
 
-    # Phase 1: TTS
-    print("=== Phase 1: Generating TTS audio ===")
+    # Load Whisper model once for word-level alignment
+    print("=== Loading Whisper model for word alignment ===")
+    from faster_whisper import WhisperModel
+    whisper_model = WhisperModel("base", device="cpu", compute_type="int8")
+    print("  Model loaded.")
+
+    # Phase 1: Get durations and word timings from existing audio
+    print("\n=== Phase 1: Reading audio durations + word timings ===")
     segments = []
-    for i, line in enumerate(dialogue):
-        speaker = line["speaker"].lower()
-        speaker_cfg = speakers.get(speaker, speakers["default"])
-        voice_id = speaker_cfg["voice_id"]
-
+    for i in range(len(dialogue)):
         audio_path = os.path.join(job_dir, f"line_{i:04d}.mp3")
-        print(f"  [{i+1}/{len(dialogue)}] {speaker}: {line['text'][:50]}...")
-
-        duration, word_timings = generate_tts(
-            line["text"], voice_id, audio_path,
-            config["ELEVENLABS_API_KEY"], config["ELEVENLABS_MODEL"],
-            ffprobe_bin=ffprobe
-        )
+        if not os.path.exists(audio_path):
+            print(f"ERROR: Missing {audio_path}")
+            sys.exit(1)
+        duration = get_audio_duration(audio_path, ffprobe)
+        word_timings = extract_word_timings_whisper(audio_path, whisper_model)
         segments.append({"index": i, "path": audio_path, "duration": duration, "word_timings": word_timings})
-        print(f"    -> {duration:.2f}s ({len(word_timings)} word timings)")
+        wt_count = len(word_timings)
+        print(f"  [{i+1}/{len(dialogue)}] {duration:.2f}s ({wt_count} words) - {dialogue[i]['text'][:50]}...")
 
-    # Phase 2: Timestamps
+    # Phase 2: Timestamps with word-level alignment
     print("\n=== Phase 2: Calculating timestamps ===")
     timestamps = []
     current = 0.0
@@ -119,17 +111,11 @@ def main():
             "word_timings": word_timings,
         })
         current += seg["duration"]
-
     total_duration = timestamps[-1]["end"]
     print(f"  Total duration: {total_duration:.2f}s")
 
-    for i, (ts, line) in enumerate(zip(timestamps, dialogue)):
-        print(f"  [{ts['start']:.2f}s - {ts['end']:.2f}s] {line['speaker']}: {line['text'][:40]}...")
-
     # Phase 3: Concat audio
     print("\n=== Phase 3: Concatenating audio ===")
-    import subprocess
-
     concat_audio = os.path.join(job_dir, "concat.wav")
     list_file = os.path.join(job_dir, "concat_list.txt")
     with open(list_file, "w") as f:
@@ -167,17 +153,13 @@ def main():
         sys.exit(1)
     print(f"  -> bg_loop.mp4 (9:16, {total_duration:.2f}s)")
 
-    # Phase 5: Composite
+    # Phase 5: Composite with ASS karaoke subtitles
     print("\n=== Phase 5: Compositing video ===")
     output_path = os.path.join(config["OUTPUT_DIR"], "demo_output.mp4")
 
     service = VideoService(config)
     service._composite(bg_video, concat_audio, timestamps, dialogue, output_path)
     print(f"  -> {output_path}")
-
-    # Cleanup
-    import shutil
-    shutil.rmtree(job_dir, ignore_errors=True)
 
     print(f"\n=== DONE! ===")
     print(f"Output: {output_path}")

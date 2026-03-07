@@ -48,9 +48,11 @@ class Config:
     # Font / subtitles
     FONT_PATH = os.getenv(
         "FONT_PATH",
-        os.path.join(ASSETS_DIR, "fonts", "Inter-Bold.ttf"),
+        os.path.join(ASSETS_DIR, "fonts", "Poppins-ExtraBold.ttf"),
     )
-    SUBTITLE_FONT_SIZE = 48
+    FONT_NAME = "Poppins ExtraBold"
+    SUBTITLE_FONT_SIZE = 116
+    SUBTITLE_HIGHLIGHT_EXTRA_SIZE = 8
     SUBTITLE_WORDS_PER_CHUNK = 4
 
     # Validation limits
