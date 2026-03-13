@@ -84,6 +84,46 @@ def generate_tts(text, voice_id, output_path, api_key, model, max_retries=3, ffp
     raise RuntimeError(f"TTS failed after {max_retries} retries (rate-limited)")
 
 
+def generate_fish_tts(text, reference_id, output_path, api_key, max_retries=3, ffprobe_bin="ffprobe"):
+    """Call Fish Audio TTS API and save the audio file.
+
+    Returns (duration, word_timings) — word_timings is empty since Fish Audio
+    doesn't provide character-level alignment.
+    """
+    url = "https://api.fish.audio/v1/tts"
+    headers = {
+        "Authorization": f"Bearer {api_key}",
+        "Content-Type": "application/json",
+        "model": "s1",
+    }
+    payload = {
+        "text": text,
+        "reference_id": reference_id,
+        "format": "mp3",
+        "mp3_bitrate": 128,
+    }
+
+    for attempt in range(max_retries):
+        resp = requests.post(url, json=payload, headers=headers, timeout=120, stream=True)
+
+        if resp.status_code == 200:
+            with open(output_path, "wb") as f:
+                for chunk in resp.iter_content(chunk_size=8192):
+                    f.write(chunk)
+
+            duration = get_audio_duration(output_path, ffprobe_bin)
+            return duration, []
+
+        if resp.status_code == 429:
+            wait = 2 ** (attempt + 1)
+            time.sleep(wait)
+            continue
+
+        resp.raise_for_status()
+
+    raise RuntimeError(f"Fish Audio TTS failed after {max_retries} retries (rate-limited)")
+
+
 def get_audio_duration(filepath, ffprobe_bin="ffprobe"):
     """Use ffprobe to get duration of an audio file in seconds."""
     cmd = [

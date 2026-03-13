@@ -36,6 +36,7 @@ def main():
         "SPEAKERS_DIR": Config.SPEAKERS_DIR,
         "ELEVENLABS_API_KEY": Config.ELEVENLABS_API_KEY,
         "ELEVENLABS_MODEL": Config.ELEVENLABS_MODEL,
+        "FISH_AUDIO_API_KEY": Config.FISH_AUDIO_API_KEY,
         "FFMPEG_BIN": Config.FFMPEG_BIN,
         "FFPROBE_BIN": Config.FFPROBE_BIN,
         "BACKGROUND_VIDEO": Config.BACKGROUND_VIDEO,
@@ -55,9 +56,18 @@ def main():
     os.makedirs(config["TEMP_DIR"], exist_ok=True)
     os.makedirs(config["OUTPUT_DIR"], exist_ok=True)
 
-    # Validate
-    if not config["ELEVENLABS_API_KEY"]:
+    # Validate API keys based on speaker TTS providers
+    providers_used = set()
+    for line in dialogue:
+        key = line["speaker"].lower()
+        cfg = speakers.get(key, speakers["default"])
+        providers_used.add(cfg.get("tts_provider", "elevenlabs"))
+
+    if "elevenlabs" in providers_used and not config["ELEVENLABS_API_KEY"]:
         print("ERROR: Set ELEVENLABS_API_KEY in .env file")
+        sys.exit(1)
+    if "fish" in providers_used and not config["FISH_AUDIO_API_KEY"]:
+        print("ERROR: Set FISH_AUDIO_API_KEY in .env file")
         sys.exit(1)
 
     if not os.path.exists(config["BACKGROUND_VIDEO"]):
@@ -71,7 +81,7 @@ def main():
 
     # Run pipeline synchronously (not threaded)
     from app.services.job_manager import job_manager
-    from app.services.tts_service import generate_tts, get_audio_duration
+    from app.services.tts_service import generate_tts, generate_fish_tts, get_audio_duration
     from app.services.video_service import VideoService
 
     job_id = "demo"
@@ -88,15 +98,23 @@ def main():
         speaker = line["speaker"].lower()
         speaker_cfg = speakers.get(speaker, speakers["default"])
         voice_id = speaker_cfg["voice_id"]
+        tts_provider = speaker_cfg.get("tts_provider", "elevenlabs")
 
         audio_path = os.path.join(job_dir, f"line_{i:04d}.mp3")
-        print(f"  [{i+1}/{len(dialogue)}] {speaker}: {line['text'][:50]}...")
+        print(f"  [{i+1}/{len(dialogue)}] {speaker} ({tts_provider}): {line['text'][:50]}...")
 
-        duration, word_timings = generate_tts(
-            line["text"], voice_id, audio_path,
-            config["ELEVENLABS_API_KEY"], config["ELEVENLABS_MODEL"],
-            ffprobe_bin=ffprobe
-        )
+        if tts_provider == "fish":
+            duration, word_timings = generate_fish_tts(
+                line["text"], voice_id, audio_path,
+                config["FISH_AUDIO_API_KEY"],
+                ffprobe_bin=ffprobe
+            )
+        else:
+            duration, word_timings = generate_tts(
+                line["text"], voice_id, audio_path,
+                config["ELEVENLABS_API_KEY"], config["ELEVENLABS_MODEL"],
+                ffprobe_bin=ffprobe
+            )
         segments.append({"index": i, "path": audio_path, "duration": duration, "word_timings": word_timings})
         print(f"    -> {duration:.2f}s ({len(word_timings)} word timings)")
 
@@ -169,10 +187,64 @@ def main():
 
     # Phase 5: Composite
     print("\n=== Phase 5: Compositing video ===")
-    output_path = os.path.join(config["OUTPUT_DIR"], "demo_output.mp4")
+    raw_output = os.path.join(job_dir, "raw_output.mp4")
 
     service = VideoService(config)
-    service._composite(bg_video, concat_audio, timestamps, dialogue, output_path)
+    service._composite(bg_video, concat_audio, timestamps, dialogue, raw_output)
+    print(f"  -> raw_output.mp4")
+
+    # Phase 6: Speed up 1.2x
+    print("\n=== Phase 6: Speeding up 1.2x ===")
+    sped_output = os.path.join(job_dir, "sped_output.mp4")
+    speed = 1.2
+    sped_duration = total_duration / speed
+
+    cmd = [
+        ffmpeg, "-y",
+        "-i", raw_output,
+        "-filter_complex",
+        f"[0:v]setpts=PTS/{speed}[v];[0:a]atempo={speed}[a]",
+        "-map", "[v]", "-map", "[a]",
+        "-c:v", "libx264", "-preset", "fast", "-crf", "23",
+        "-c:a", "aac", "-b:a", "192k",
+        "-movflags", "+faststart",
+        sped_output,
+    ]
+    result = subprocess.run(cmd, capture_output=True, text=True)
+    if result.returncode != 0:
+        print(f"ERROR: {result.stderr}")
+        sys.exit(1)
+    print(f"  -> sped_output.mp4 (1.2x, {sped_duration:.2f}s)")
+
+    # Phase 7: Add background music at low volume
+    print("\n=== Phase 7: Adding background music ===")
+    output_path = os.path.join(config["OUTPUT_DIR"], "demo_output.mp4")
+    bg_music = os.path.join(config["ASSETS_DIR"], "bg-music", "Synthwave goose - Blade Runner 2049.mp3")
+
+    if os.path.exists(bg_music):
+        cmd = [
+            ffmpeg, "-y",
+            "-i", sped_output,
+            "-stream_loop", "-1",
+            "-i", bg_music,
+            "-filter_complex",
+            f"[1:a]volume=0.12[bg];"
+            f"[0:a][bg]amix=inputs=2:duration=first:dropout_transition=2[a]",
+            "-map", "0:v", "-map", "[a]",
+            "-t", f"{sped_duration:.3f}",
+            "-c:v", "copy",
+            "-c:a", "aac", "-b:a", "192k",
+            "-movflags", "+faststart",
+            output_path,
+        ]
+    else:
+        print(f"  WARNING: BG music not found at {bg_music}, skipping music")
+        cmd = [ffmpeg, "-y", "-i", sped_output, "-c", "copy", output_path]
+
+    result = subprocess.run(cmd, capture_output=True, text=True)
+    if result.returncode != 0:
+        print(f"ERROR: {result.stderr}")
+        sys.exit(1)
     print(f"  -> {output_path}")
 
     # Cleanup
@@ -181,7 +253,7 @@ def main():
 
     print(f"\n=== DONE! ===")
     print(f"Output: {output_path}")
-    print(f"Duration: {total_duration:.2f}s")
+    print(f"Duration: {sped_duration:.2f}s (original {total_duration:.2f}s @ {speed}x)")
 
 
 if __name__ == "__main__":

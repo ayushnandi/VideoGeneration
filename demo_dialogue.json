@@ -1,18 +1,9 @@
 [
-  {"speaker": "cat", "text": "toji suno na… suno na… Spring Boot kya hota hai? bataoo na please…", "cat_image": "cat/innocent_cat.jpg"},
-  {"speaker": "toji", "text": "Spring Boot ek framework hai chhote… Java me applications banana fast aur simple bana deta hai.", "cat_image": "cat/KeepOntalking.jpg"},
-  {"speaker": "cat", "text": "simple simple matlab… mujhe zyada code nahi likhna padega?", "cat_image": "cat/cat_curiosity_closeup_question.jpg"},
-  {"speaker": "toji", "text": "haan. Pehle Java me bahut configuration karni padti thi… Spring Boot bolta hai tum bas logic likho, baaki main handle kar lunga.", "cat_image": "cat/KeepOntalking.jpg"},
-  {"speaker": "cat", "text": "ohhh… matlab helper jaisa? jaise tum meri help karte ho?", "cat_image": "cat/cat_realization_ooh.jpg"},
-  {"speaker": "toji", "text": "bilkul. Spring Boot ek silent helper jaisa hai developers ke liye.", "cat_image": "cat/KeepOntalking.jpg"},
-  {"speaker": "cat", "text": "toji… ek aur puchu? puchu na?", "cat_image": "cat/cat_curiosity_closeup_question.jpg"},
-  {"speaker": "toji", "text": "pucho.", "cat_image": "cat/KeepOntalking.jpg"},
-  {"speaker": "cat", "text": "sab log bolte hain API banao API banao… Spring Boot me API kaise banta hai?", "cat_image": "cat/cat_curiosity_closeup_question.jpg"},
-  {"speaker": "toji", "text": "Spring Boot me tum ek controller banate ho aur ek endpoint define karte ho, jaise /hello.", "cat_image": "cat/KeepOntalking.jpg"},
-  {"speaker": "cat", "text": "endpoint matlab… darwaza?", "cat_image": "cat/cat_curiosity_closeup_question.jpg"},
-  {"speaker": "toji", "text": "haan. Internet se koi us darwaze par knock kare… tumhara code response de deta hai.", "cat_image": "cat/KeepOntalking.jpg"},
-  {"speaker": "cat", "text": "ohhh… matlab user knock kare… aur Spring Boot bole 'andar aao'?", "cat_image": "cat/cat_realization_ooh.jpg"},
-  {"speaker": "toji", "text": "exactly. Aur phir tum decide karte ho user ko kya data bhejna hai.", "cat_image": "cat/KeepOntalking.jpg"},
-  {"speaker": "cat", "text": "ohhh… ab samajh aa gaya… thoda thoda… main smart ho rahi hu na?", "cat_image": "cat/cat_realization_ooh.jpg"},
-  {"speaker": "toji", "text": "hm… tum already smart ho chhote.", "cat_image": "cat/KeepOntalking.jpg"}
+  {"speaker": "Tanmay", "text": "Dekh Samay, aaj kal content ka biggest power kya hai pata hai? Distribution. Pehle TV decide karta tha kaun dikhega, ab koi bhi phone se content daal ke audience tak pahunch sakta hai."},
+  {"speaker": "Samay", "text": "Haan bhai sahi hai, main bhi chess khelte khelte stream kar raha tha corona me, aur log bol rahe the content strategy. Bhai mujhe khud nahi pata tha strategy hai."},
+  {"speaker": "Tanmay", "text": "Exactly. Internet me ek interesting cheez hoti hai, asymmetric luck. Tum ek video daalte ho, pata nahi kaun dekh lega. Kabhi kabhi ek random tweet ya video se pura career change ho jata hai."},
+  {"speaker": "Samay", "text": "Matlab basically tu video daal, aur pray kar ki algorithm bole isko famous bana dete hain?"},
+  {"speaker": "Tanmay", "text": "Thoda sa woh bhi hai. Par real game consistency hai. Agar tum 100 videos banaoge tabhi ek viral niklega."},
+  {"speaker": "Samay", "text": "Haan ye sahi hai, log sochte hain ek reel se career ban jayega. Reality ye hai bhai 200 reel banao tab jaake ek chalti hai."},
+  {"speaker": "Tanmay", "text": "Aur long form content agar chal gaya na, woh real gold hai. Agar koi 20 minute tumhari video dekh raha hai, matlab usne tumhe apna time diya hai. Woh trust hai."}
 ]

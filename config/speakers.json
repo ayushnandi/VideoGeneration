@@ -1,17 +1,23 @@
 {
-  "cat": {
-    "voice_id": "EXAVITQu4vr4xnSDxMaL",
-    "image": "cat/cat_innocent_idle.png",
-    "position": "left"
+  "samay": {
+    "voice_id": "SUbH2fqQDO3FzZ1JHtWY",
+    "image": "SamayRaina/Samay_raina.png",
+    "position": "center-left",
+    "tts_provider": "elevenlabs",
+    "scale": "-1:650"
   },
-  "toji": {
-    "voice_id": "pNInz6obpgDQGcFmaJgB",
-    "image": "toji/Toji Fushiguro.jpg",
-    "position": "right"
+  "tanmay": {
+    "voice_id": "t5wlFeA3v0B4RZeIP6wy",
+    "image": "TanmayBhat/Tanmay.png",
+    "position": "center-right",
+    "tts_provider": "elevenlabs",
+    "scale": "-1:750"
   },
   "default": {
-    "voice_id": "pNInz6obpgDQGcFmaJgB",
-    "image": "toji/Toji Fushiguro.jpg",
-    "position": "right"
+    "voice_id": "SUbH2fqQDO3FzZ1JHtWY",
+    "image": "SamayRaina/Samay_raina.png",
+    "position": "center-left",
+    "tts_provider": "elevenlabs",
+    "scale": "-1:650"
   }
 }

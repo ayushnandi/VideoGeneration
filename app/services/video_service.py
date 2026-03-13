@@ -182,7 +182,10 @@ class VideoService:
         vid_h = self.config["VIDEO_HEIGHT"]
         words_per = self.config.get("SUBTITLE_WORDS_PER_CHUNK", 4)
 
-        # ASS header — Alignment 5 = center-middle
+        # Subtitle vertical position — above middle (~38% from top)
+        sub_margin_v = int(vid_h * 0.38)
+
+        # ASS header — Alignment 8 = top-center, MarginV pushes down
         lines = [
             "[Script Info]",
             "ScriptType: v4.00+",
@@ -197,7 +200,7 @@ class VideoService:
             "Alignment, MarginL, MarginR, MarginV, Encoding",
             f"Style: Default,{font_name},{font_size},"
             "&H00FFFFFF,&H0000FFFF,&H00000000,&H00000000,"
-            "0,0,0,0,100,100,0,0,1,3,0,5,10,10,10,1",
+            f"0,0,0,0,100,100,0,0,1,3,0,8,10,10,{sub_margin_v},1",
             "",
             "[Events]",
             "Format: Layer, Start, End, Style, Name, "
@@ -215,13 +218,10 @@ class VideoService:
             if word_timings and len(word_timings) == len(all_words):
                 per_word = word_timings
             elif word_timings and len(word_timings) > 0:
-                # Mismatch in count (punctuation differences etc) —
-                # redistribute real timings across split words proportionally
                 per_word = self._redistribute_timings(
                     all_words, word_timings, ts["start"], ts["end"]
                 )
             else:
-                # No word timings — fall back to equal distribution
                 line_dur = ts["end"] - ts["start"]
                 word_dur = line_dur / len(all_words)
                 per_word = []
@@ -240,9 +240,19 @@ class VideoService:
                 chunk_words = all_words[si:ei]
                 chunk_timings = per_word[si:ei]
 
+                # Chunk time span: first word start → last word end
+                chunk_start = chunk_timings[0]["start"]
+                chunk_end = chunk_timings[-1]["end"]
+
+                # Continuous highlighting: each word's event spans from
+                # its start to the next word's start (no gaps/disappearing).
+                # Last word spans to chunk_end.
                 for wi in range(len(chunk_words)):
-                    w_start = chunk_timings[wi]["start"]
-                    w_end = chunk_timings[wi]["end"]
+                    ev_start = chunk_timings[wi]["start"]
+                    if wi + 1 < len(chunk_words):
+                        ev_end = chunk_timings[wi + 1]["start"]
+                    else:
+                        ev_end = chunk_end
 
                     parts = []
                     for wj, w in enumerate(chunk_words):
@@ -257,8 +267,8 @@ class VideoService:
                             parts.append(clean)
 
                     text = " ".join(parts)
-                    start_str = self._ass_timestamp(w_start)
-                    end_str = self._ass_timestamp(w_end)
+                    start_str = self._ass_timestamp(ev_start)
+                    end_str = self._ass_timestamp(ev_end)
                     lines.append(
                         f"Dialogue: 0,{start_str},{end_str},Default,,0,0,0,,{text}"
                     )
@@ -299,91 +309,81 @@ class VideoService:
     def _composite(self, bg_video, audio, timestamps, dialogue, output_path):
         speakers = self.config["SPEAKERS"]
         speakers_dir = self.config["SPEAKERS_DIR"]
-        ow = self.config["OVERLAY_WIDTH"]
-        oh = self.config["OVERLAY_HEIGHT"]
         vid_w = self.config["VIDEO_WIDTH"]
         vid_h = self.config["VIDEO_HEIGHT"]
+        default_ow = self.config["OVERLAY_WIDTH"]
+        default_oh = self.config["OVERLAY_HEIGHT"]
 
         margin = 30
-        y_pos = vid_h - oh - 120
-        pos_left_x = margin
-        pos_right_x = vid_w - ow - margin
+        bottom_margin = 120
 
-        # ── toji image ────────────────────────────────────────────
-        toji_cfg = speakers.get("toji", speakers["default"])
-        toji_img = os.path.join(speakers_dir, toji_cfg["image"])
-
-        # ── collect unique cat images (only for cat's lines) ──────
-        unique_cat_images = {}   # key (relative path) → absolute path
-        line_cat_key = []        # per-line: which cat image key
+        # ── collect unique speakers and their images ──────────────
+        speaker_images = {}  # speaker_key → abs image path
         for line in dialogue:
-            cat_rel = line.get("cat_image", "cat/innocent_cat.jpg")
-            if line["speaker"].lower() == "cat" and cat_rel not in unique_cat_images:
-                unique_cat_images[cat_rel] = os.path.join(speakers_dir, cat_rel)
-            line_cat_key.append(cat_rel)
+            key = line["speaker"].lower()
+            if key not in speaker_images:
+                cfg = speakers.get(key, speakers["default"])
+                speaker_images[key] = os.path.join(speakers_dir, cfg["image"])
 
         # ── build FFmpeg inputs ──────────────────────────────────
-        # 0 = bg video, 1 = audio, 2 = toji image, 3+ = unique cat images
+        # 0 = bg video, 1 = audio, 2+ = speaker images
         inputs = ["-i", bg_video, "-i", audio]
-        inputs.extend(["-loop", "1", "-i", toji_img])
-        toji_idx = 2
-
-        cat_img_idx = {}  # cat_rel → ffmpeg input index
-        next_idx = 3
-        for cat_rel, abs_path in unique_cat_images.items():
-            inputs.extend(["-loop", "1", "-i", abs_path])
-            cat_img_idx[cat_rel] = next_idx
+        speaker_idx = {}  # speaker_key → ffmpeg input index
+        next_idx = 2
+        for key, img_path in speaker_images.items():
+            inputs.extend(["-loop", "1", "-i", img_path])
+            speaker_idx[key] = next_idx
             next_idx += 1
 
         # ── build filter_complex ─────────────────────────────────
         filters = []
         total_duration = timestamps[-1]["end"] if timestamps else 0
 
-        # Cat on left, Toji on right
-        cat_x = pos_left_x
-        toji_x = pos_right_x
+        # Scale each speaker image (per-speaker scale preserving aspect ratio)
+        for key, idx in speaker_idx.items():
+            cfg = speakers.get(key, speakers["default"])
+            scale = cfg.get("scale", f"{default_ow}:{default_oh}")
+            safe_key = key.replace(' ', '_')
+            filters.append(f"[{idx}:v]scale={scale}[img_{safe_key}]")
 
-        # Scale toji once
-        filters.append(f"[{toji_idx}:v]scale={ow}:{oh}[img_toji]")
-
-        # Scale each unique cat image
-        for cat_rel, idx in cat_img_idx.items():
-            safe_label = f"img_cat_{idx}"
-            filters.append(f"[{idx}:v]scale={ow}:{oh}[{safe_label}]")
-
-        # ── toji overlay: only during toji's lines ───────────────
-        toji_windows = []
-        for i, line in enumerate(dialogue):
-            if line["speaker"].lower() == "toji":
-                toji_windows.append(
-                    f"between(t,{timestamps[i]['start']:.3f},{timestamps[i]['end']:.3f})"
-                )
-        toji_enable = "+".join(toji_windows)
-        filters.append(
-            f"[0:v][img_toji]overlay={toji_x}:{y_pos}:"
-            f"enable='{toji_enable}'[v_toji]"
-        )
-
-        # ── cat overlays: only during cat's lines, one per unique image ─
-        cat_time_windows = {}
-        for i, cat_rel in enumerate(line_cat_key):
-            if dialogue[i]["speaker"].lower() != "cat":
-                continue
-            if cat_rel not in cat_time_windows:
-                cat_time_windows[cat_rel] = []
-            cat_time_windows[cat_rel].append(
-                f"between(t,{timestamps[i]['start']:.3f},{timestamps[i]['end']:.3f})"
-            )
-
-        prev = "v_toji"
+        # Overlay each speaker only during their lines
+        # Use overlay_w/overlay_h to compute position dynamically
+        prev = "0:v"
         overlay_counter = 0
-        for cat_rel, windows in cat_time_windows.items():
-            idx = cat_img_idx[cat_rel]
-            safe_label = f"img_cat_{idx}"
+        for key, idx in speaker_idx.items():
+            cfg = speakers.get(key, speakers["default"])
+            position = cfg.get("position", "right")
+            safe_key = key.replace(' ', '_')
+
+            # x position based on layout
+            if position == "center-left":
+                # center image at ~30% of screen width
+                x_expr = f"(W*30/100)-(overlay_w/2)"
+            elif position == "center-right":
+                # center image at ~70% of screen width
+                x_expr = f"(W*70/100)-(overlay_w/2)"
+            elif position == "left":
+                x_expr = str(margin)
+            else:
+                x_expr = f"W-overlay_w-{margin}"
+
+            # y: below-middle (center image at ~58% of screen height)
+            y_expr = f"(H*58/100)-(overlay_h/2)"
+
+            windows = []
+            for i, line in enumerate(dialogue):
+                if line["speaker"].lower() == key:
+                    windows.append(
+                        f"between(t,{timestamps[i]['start']:.3f},{timestamps[i]['end']:.3f})"
+                    )
+
+            if not windows:
+                continue
+
             enable_expr = "+".join(windows)
             out_label = f"v{overlay_counter}"
             filters.append(
-                f"[{prev}][{safe_label}]overlay={cat_x}:{y_pos}:"
+                f"[{prev}][img_{safe_key}]overlay={x_expr}:{y_expr}:"
                 f"enable='{enable_expr}'[{out_label}]"
             )
             prev = out_label
