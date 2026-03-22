@@ -431,3 +431,8 @@ class VideoService:
 
         if result.returncode != 0:
             raise RuntimeError(f"Compositing failed: {result.stderr}")
+
+    # Public API for backward compatibility
+    def compose_video(self, bg_video, audio, timestamps, dialogue, image_map, output_path):
+        # image_map is unused by internal compositor; kept for compatibility with existing scripts
+        self._composite(bg_video, audio, timestamps, dialogue, output_path)

@@ -1,14 +1,14 @@
 {
   "samay": {
     "voice_id": "SUbH2fqQDO3FzZ1JHtWY",
-    "image": "SamayRaina/Samay_raina.png",
+    "image": "SamayRaina/s.png",
     "position": "center-left",
     "tts_provider": "elevenlabs",
     "scale": "-1:650"
   },
   "tanmay": {
     "voice_id": "t5wlFeA3v0B4RZeIP6wy",
-    "image": "TanmayBhat/Tanmay.png",
+    "image": "TanmayBhat/t.png",
     "position": "center-right",
     "tts_provider": "elevenlabs",
     "scale": "-1:750"
